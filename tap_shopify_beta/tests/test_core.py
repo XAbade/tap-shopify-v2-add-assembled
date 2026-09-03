@@ -4,7 +4,12 @@ import datetime
 
 from hotglue_singer_sdk.testing import get_standard_tap_tests
 
-from tap_shopify_beta.streams import LocationsStream, OrdersStream
+from tap_shopify_beta.streams import (
+    LocationsStream,
+    OrdersStream,
+    ProductsStream,
+    VariantsStream,
+)
 from tap_shopify_beta.tap import TapshopifyBeta
 
 SAMPLE_CONFIG = {
@@ -87,3 +92,39 @@ def test_locations_post_process_preserves_all_locations_when_unset_or_empty():
 
     stream = _locations_stream([])
     assert stream.post_process(record) == record
+
+
+def test_variant_schema_exposes_bundle_components():
+    properties = VariantsStream.schema["properties"]
+
+    assert properties["requiresComponents"]["type"] == ["boolean", "null"]
+
+    components = properties["productVariantComponents"]
+    assert components["type"] == ["array", "null"]
+
+    component = components["items"]["properties"]
+    assert component["id"]["type"] == ["string", "null"]
+    assert component["quantity"]["type"] == ["integer", "null"]
+    assert component["productVariant"]["properties"]["id"]["type"] == ["string", "null"]
+    assert component["productVariant"]["properties"]["sku"]["type"] == ["string", "null"]
+
+
+def test_variants_stream_treats_components_as_a_connection():
+    assert VariantsStream.extra_paginated_fields == {"productVariantComponents": 25}
+    assert (
+        VariantsStream.bulk_process_fields["ProductVariantComponent"]
+        == "productVariantComponents"
+    )
+    # The default connections must survive the per-stream override.
+    assert VariantsStream.default_paginated_fields["metafields"] == 50
+
+
+def test_products_stream_sorts_by_replication_key():
+    assert ProductsStream.sort_key == "UPDATED_AT"
+    assert ProductsStream.sort_key_type == "ProductSortKeys"
+
+
+def test_products_schema_exposes_bundle_parent_indicator():
+    properties = ProductsStream.schema["properties"]
+
+    assert properties["hasVariantsThatRequiresComponents"]["type"] == ["boolean", "null"]
