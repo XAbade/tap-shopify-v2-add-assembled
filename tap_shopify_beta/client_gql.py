@@ -258,6 +258,11 @@ class shopifyGqlStream(shopifyStream):
                 record["metafields"] = self._fetch_all_metafields(record)
             if isinstance(record.get("refundLineItems"), dict):
                 record["refundLineItems"] = self._fetch_all_refund_line_items(record)
+            for field, page_size in self.extra_paginated_fields.items():
+                if isinstance(record.get(field), dict):
+                    record[field] = self._fetch_paginated_connection(
+                        record, field, page_size=page_size
+                    )
             yield record
 
     def filter_response(self, response_json: dict) -> dict:
