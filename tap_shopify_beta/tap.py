@@ -2,11 +2,12 @@
 
 from typing import List
 
-from hotglue_singer_sdk import Stream, Tap
-from hotglue_singer_sdk import typing as th
+from hotglue_singer_sdk import Stream, Tap  # type: ignore[import-not-found]
+from hotglue_singer_sdk import typing as th  # type: ignore[import-not-found]
 
 from tap_shopify_beta.streams import (
     CollectionsStream,
+    ComposedProductsStream,
     CustomersStream,
     CustomerJourneySummaryStream,
     CustomerFirstVisitStream,
@@ -30,6 +31,7 @@ from tap_shopify_beta.streams import (
 
 STREAM_TYPES = [
     ProductsStream,
+    ComposedProductsStream,
     VariantsStream,
     ShopStream,
     OrdersStream,
