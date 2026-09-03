@@ -60,6 +60,12 @@ class ProductsStream(DynamicStream):
     primary_keys = ["id", "updatedAt"]
     query_name = "products"
     replication_key = "updatedAt"
+    # `products` supports sorting by UPDATED_AT, so the search field and the
+    # sort key match: Shopify warns that a range search sorted by something
+    # else can time out. It also enables `get_earliest_replication_key`, which
+    # keeps concurrent partitions off the empty span below the first record.
+    sort_key = "UPDATED_AT"
+    sort_key_type = "ProductSortKeys"
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
@@ -76,6 +82,7 @@ class ProductsStream(DynamicStream):
         th.Property("handle", th.StringType),
         th.Property("hasOnlyDefaultVariant", th.BooleanType),
         th.Property("hasOutOfStockVariants", th.BooleanType),
+        th.Property("hasVariantsThatRequiresComponents", th.BooleanType),
         th.Property("isGiftCard", th.BooleanType),
         th.Property("legacyResourceId", th.StringType),
         th.Property("mediaCount", CountType()),
@@ -150,6 +157,10 @@ class VariantsStream(DynamicStream):
     primary_keys = ["id", "updatedAt"]
     query_name = "productVariants"
     replication_key = "updatedAt"
+    # No UPDATED_AT in ProductVariantSortKeys, so this stream stays on the
+    # default ID sort; the date-partitioned/day-windowed ranges keep each
+    # search small enough for that mismatch not to bite.
+    extra_paginated_fields = {"productVariantComponents": 25}
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
@@ -200,9 +211,25 @@ class VariantsStream(DynamicStream):
             th.Property("value", th.StringType),
             th.Property("type", th.StringType),
         ))),
+        # True when this variant can only be bought as a bundle parent.
+        th.Property("requiresComponents", th.BooleanType),
+        # The variant's bill of materials: one entry per component variant,
+        # with the quantity of it consumed by one unit of this variant.
+        # Empty/absent for everything that is not a bundle parent.
+        th.Property("productVariantComponents", th.ArrayType(th.ObjectType(
+            th.Property("id", th.StringType),
+            th.Property("quantity", th.IntegerType),
+            th.Property("productVariant", th.ObjectType(
+                th.Property("id", th.StringType),
+                th.Property("sku", th.StringType),
+            )),
+        ))),
     ).to_dict()
 
-    bulk_process_fields = {"Metafield": "metafields"}
+    bulk_process_fields = {
+        "Metafield": "metafields",
+        "ProductVariantComponent": "productVariantComponents",
+    }
 
 
 class OrdersStream(DynamicStream):

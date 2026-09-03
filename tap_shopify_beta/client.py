@@ -20,6 +20,22 @@ class shopifyStream(GraphQLStream):
 
     query_name = None
 
+    #: Connection fields that must be selected as ``edges { node { ... } }``
+    #: instead of a plain object selection, mapped to their page size.
+    #: ``page_size`` only applies to the plain GraphQL path - the Bulk API
+    #: ignores pagination arguments and always returns every node.
+    default_paginated_fields = {"metafields": 50, "refundLineItems": 50}
+
+    #: Per-stream additions to (or overrides of) ``default_paginated_fields``.
+    #: Declaring a connection here is enough for the GraphQL path to select it
+    #: correctly, paginate any overflow and flatten it into a plain list.
+    extra_paginated_fields: dict = {}
+
+    @property
+    def paginated_fields(self) -> dict:
+        """Return every connection field needing an edges/node selection."""
+        return {**self.default_paginated_fields, **self.extra_paginated_fields}
+
     def get_shop_name(self) -> str:
         """Return the shop name, configurable via tap settings."""
         shop_no_https = self.config["shop"].replace("https://", "")
@@ -81,20 +97,12 @@ class shopifyStream(GraphQLStream):
                 else:
                     query = self.get_field_query(key, value["properties"])
                 output.append(query)
-            elif key == "metafields":
+            elif key in self.paginated_fields:
                 query = self.get_field_query(
                     key,
                     value["properties"],
                     is_paginated=True,
-                    page_size=50,
-                )
-                output.append(query)
-            elif key == "refundLineItems":
-                query = self.get_field_query(
-                    key,
-                    value["properties"],
-                    is_paginated=True,
-                    page_size=50,
+                    page_size=self.paginated_fields[key],
                 )
                 output.append(query)
             elif "properties" in value:

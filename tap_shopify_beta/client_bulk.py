@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from pendulum import parse
 from time import sleep
-from typing import Any, Iterable, cast
+from typing import Any, Iterable, Optional, cast
 
 import requests
 import simplejson
@@ -199,6 +199,20 @@ class shopifyBulkStream(shopifyStream):
             # yield final record
             if parent_line:
                 yield parent_line
+
+    def post_process(self, row: dict, context: Optional[dict] = None) -> dict:
+        """Flatten connections reassembled by ``bulk_process_fields`` into lists.
+
+        ``parse_response`` rebuilds nested connections in their wire shape
+        (``{"edges": [{"node": ...}]}``) so the bulk and GraphQL paths share the
+        same reassembly code. Connections declared in ``extra_paginated_fields``
+        are flattened here to match the array shape declared in the schema.
+        """
+        for field in self.extra_paginated_fields:
+            value = row.get(field)
+            if isinstance(value, dict):
+                row[field] = [edge["node"] for edge in value.get("edges", [])]
+        return row
 
     def get_next_page_token(self, response, previous_token) -> Any:
         now = datetime.now(timezone.utc)
