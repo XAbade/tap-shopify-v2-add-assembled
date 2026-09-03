@@ -1,15 +1,25 @@
 """Tests standard tap features using the built-in SDK tests library."""
 
 import datetime
+import json
 
-from hotglue_singer_sdk.testing import get_standard_tap_tests
+import requests
+from hotglue_singer_sdk.testing import (  # type: ignore[import-not-found]
+    get_standard_tap_tests,
+)
 
-from tap_shopify_beta.streams import LocationsStream, OrdersStream
+from tap_shopify_beta.streams import (
+    ComposedProductsStream,
+    LocationsStream,
+    OrdersStream,
+)
 from tap_shopify_beta.tap import TapshopifyBeta
 
 SAMPLE_CONFIG = {
     "shop": "dummy-shop",
-    "start_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+    "start_date": datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%d"
+    ),
 }
 
 
@@ -20,12 +30,83 @@ def test_standard_tap_tests():
         TapshopifyBeta,
         config=SAMPLE_CONFIG
     )
-    # Exclude SDK connection test: unit suite must not perform live Shopify calls.
+    # Exclude the connection test: unit tests must not call Shopify.
     excluded_test_names = {"_test_stream_connections"}
     for test in tests:
         if test.__name__ in excluded_test_names:
             continue
         test()
+
+
+def test_composed_products_stream_flattens_and_paginates_bundle_components():
+    stream = ComposedProductsStream(tap=TapshopifyBeta(config=SAMPLE_CONFIG))
+
+    assert "productVariantComponents(first: 30)" in str(stream.query)
+    assert stream.get_url_params(None, "next") == {
+        "first": 1,
+        "filter": "requires_components:true",
+        "after": "next",
+    }
+
+    payload = {
+        "data": {
+            "productVariants": {
+                "edges": [{
+                    "cursor": "cursor-1",
+                    "node": {
+                        "id": (
+                            "gid://shopify/ProductVariant/bundle"
+                        ),
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "productVariantComponents": {
+                            "edges": [{
+                                "node": {
+                                    "id": (
+                                        "gid://shopify/"
+                                        "ProductVariantComponent/relation"
+                                    ),
+                                    "quantity": 2,
+                                    "productVariant": {
+                                        "id": (
+                                            "gid://shopify/"
+                                            "ProductVariant/part"
+                                        )
+                                    },
+                                }
+                            }]
+                        },
+                    },
+                }],
+                "pageInfo": {"hasNextPage": True},
+            }
+        }
+    }
+    filtered = stream.filter_response(payload)
+    assert filtered["data"]["productVariants"]["edges"] == [{
+        "node": {
+            "id": "gid://shopify/ProductVariantComponent/relation",
+            "composedProductId": "gid://shopify/ProductVariant/bundle",
+            "partProductId": "gid://shopify/ProductVariant/part",
+            "partQuantity": 2,
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }
+    }]
+
+    response = requests.Response()
+    response._content = json.dumps({
+        "data": {"productVariants": {
+            "edges": [{"cursor": "cursor-1"}],
+            "pageInfo": {"hasNextPage": True},
+        }}
+    }).encode()
+    assert stream.get_next_page_token(response, None) == "cursor-1"
+
+    try:
+        stream.get_next_page_token(response, "cursor-1")
+    except RuntimeError:
+        pass
+    else:
+        assert False, "Repeated pagination cursor must fail"
 
 
 def test_orders_schema_exposes_pos_source_and_retail_location():
