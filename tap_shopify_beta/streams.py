@@ -205,6 +205,100 @@ class VariantsStream(DynamicStream):
     bulk_process_fields = {"Metafield": "metafields"}
 
 
+class ComposedProductsStream(shopifyGqlStream):
+    """Product variant components that make up Shopify bundles."""
+
+    name = "composed_products"
+    primary_keys = ["id"]
+    query_name = "productVariants"
+    json_path = "$.data.productVariants.edges[*].node"
+
+    schema = th.PropertiesList(
+        th.Property("id", th.StringType),
+        th.Property("composedProductId", th.StringType),
+        th.Property("partProductId", th.StringType),
+        th.Property("partQuantity", th.IntegerType),
+        th.Property("updatedAt", th.DateTimeType),
+    ).to_dict()
+
+    @cached_property
+    def query(self) -> str:
+        return """
+            query tapShopify($first: Int, $after: String, $filter: String) {
+                productVariants(
+                    first: $first, after: $after, query: $filter
+                ) {
+                    edges {
+                        cursor
+                        node {
+                            id
+                            updatedAt
+                            productVariantComponents(first: 30) {
+                                edges {
+                                    node {
+                                        id
+                                        quantity
+                                        productVariant { id }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pageInfo { hasNextPage }
+                }
+            }
+        """
+
+    def get_url_params(self, context, next_page_token):
+        params = {
+            "first": self.page_size,
+            "filter": "requires_components:true",
+        }
+        if next_page_token:
+            params["after"] = next_page_token
+        return params
+
+    def get_next_page_token(self, response, previous_token):
+        connection = (
+            response.json().get("data", {}).get(self.query_name, {})
+        )
+        if not connection.get("pageInfo", {}).get("hasNextPage"):
+            return None
+        edges = connection.get("edges", [])
+        cursor = edges[-1].get("cursor") if edges else None
+        if not cursor or cursor == previous_token:
+            raise RuntimeError(
+                f"Non-progressing pagination for stream {self.name}"
+            )
+        return cursor
+
+    def filter_response(self, response_json: dict) -> dict:
+        connection = response_json.get("data", {}).get(self.query_name)
+        if not connection:
+            return response_json
+
+        records = []
+        for edge in connection.get("edges", []):
+            parent = edge.get("node") or {}
+            components = parent.get("productVariantComponents", {}).get(
+                "edges", []
+            )
+            for component_edge in components:
+                component = component_edge.get("node") or {}
+                part = component.get("productVariant") or {}
+                records.append({
+                    "node": {
+                        "id": component.get("id"),
+                        "composedProductId": parent.get("id"),
+                        "partProductId": part.get("id"),
+                        "partQuantity": component.get("quantity"),
+                        "updatedAt": parent.get("updatedAt"),
+                    }
+                })
+        connection["edges"] = records
+        return response_json
+
+
 class OrdersStream(DynamicStream):
     """Define orders stream."""
 
@@ -1013,12 +1107,14 @@ class InventoryLevelRestStream(shopifyRestStream):
         params = super().get_url_params(context, next_page_token)
         if next_page_token:
             return params  # Shopify REST: page_info replaces other filters
+        if context is None:
+            raise ValueError("Inventory levels require a location context")
         params["location_ids"] = context["location_id"]
         if self.config.get("inventory_item_ids"):
             item_ids = self.config.get("inventory_item_ids")
-            if isinstance(item_ids,list):
+            if isinstance(item_ids, list):
                 item_ids = ",".join(item_ids)
-            params.update({"inventory_item_ids":item_ids})
+            params.update({"inventory_item_ids": item_ids})
         return params
 
     parent_stream_type = LocationsStream
@@ -1043,13 +1139,14 @@ class InventoryLevelGqlStream(shopifyGqlStream):
     parent_stream_type = InventoryLevelRestStream
     query_name = "inventoryLevel"
     is_list = False
-    # change needed as incoming and available fields are deprecated in inventory_level
+    # Incoming and available fields are deprecated in inventory_level.
     additional_arguments = {
         "quantities": '(names: ["available", "incoming"])'
     }
 
-
     def single_object_params(self, context=None):
+        if context is None:
+            raise ValueError("Inventory levels require a parent context")
         return {"id": context["inventory_level_id"]}
 
     schema = th.PropertiesList(
@@ -1207,9 +1304,13 @@ class CustomerVisitStream(shopifyGqlStream, metaclass=abc.ABCMeta):
     primary_keys = ["id", "updatedAt"]
     query_name = "orders"
     replication_key = "updatedAt"
-    page_size = 100
     is_timestamp_replication_key = True
-    json_path = "$.edges[*].node"  # JSONPath to compile over the result of filter_response()
+    # JSONPath to compile over the result of filter_response().
+    json_path = "$.edges[*].node"
+
+    @property
+    def page_size(self):
+        return 100
 
     @property
     def schema(self):
@@ -1222,13 +1323,21 @@ class CustomerVisitStream(shopifyGqlStream, metaclass=abc.ABCMeta):
         ).to_dict()
 
     def filter_response(self, response_json: dict) -> dict:
+        order_edges = (
+            ((response_json.get("data") or {}).get("orders") or {}).get(
+                "edges", []
+            )
+        )
         return {
-            'edges': [
-                e
-                for e in ((response_json.get('data') or {}).get('orders') or {}).get('edges', [])
-                if e.get('node', {}).get('customerJourneySummary', {}).get(self.visit_type)
+            "edges": [
+                edge
+                for edge in order_edges
+                if edge.get("node", {}).get(
+                    "customerJourneySummary", {}
+                ).get(self.visit_type)
             ]
         }
+
 
 class CustomerFirstVisitStream(CustomerVisitStream):
     """Define Customer Visit stream"""
@@ -1238,6 +1347,7 @@ class CustomerFirstVisitStream(CustomerVisitStream):
     @property
     def visit_type(self) -> str:
         return "firstVisit"
+
 
 class CustomerLastVisitsStream(CustomerVisitStream):
     """Define Customer Visit stream"""
@@ -1256,8 +1366,11 @@ class CustomerJourneySummaryStream(shopifyGqlStream):
     primary_keys = ["id", "updatedAt"]
     query_name = "orders"
     replication_key = "updatedAt"
-    page_size = 100
     is_timestamp_replication_key = True
+
+    @property
+    def page_size(self):
+        return 100
 
     schema = th.PropertiesList(
             th.Property("id", th.StringType),
@@ -1271,7 +1384,8 @@ class CustomerJourneySummaryStream(shopifyGqlStream):
                 th.Property("ready", th.BooleanType),
             ))
     ).to_dict()
-    
+
+
 class PayoutsStream(shopifyGqlStream):
     """Define base class for CustomerVisit stream"""
 
@@ -1279,9 +1393,15 @@ class PayoutsStream(shopifyGqlStream):
     primary_keys = ["id", "issuedAt"]
     query_name = "payouts"
     replication_key = "issuedAt"
-    page_size = 100
     json_path = "$.data.shopifyPaymentsAccount.payouts.edges[*].node"
-    max_requests = 1
+
+    @property
+    def page_size(self):
+        return 100
+
+    @cached_property
+    def max_requests(self):
+        return 1
 
     schema = th.PropertiesList(
             th.Property("id", th.StringType),
