@@ -249,6 +249,11 @@ class ComposedProductsStream(shopifyGqlStream):
             }
         """
 
+    def get_records(self, context):
+        if self.config.get("sync_composed_products") is False:
+            return
+        yield from super().get_records(context)
+
     def get_url_params(self, context, next_page_token):
         params = {
             "first": self.page_size,
