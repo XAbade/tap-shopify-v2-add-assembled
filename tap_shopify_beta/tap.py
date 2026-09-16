@@ -81,6 +81,12 @@ class TapshopifyBeta(Tap):
             description="The latest record date to sync (inclusive)",
         ),
         th.Property(
+            "sync_composed_products",
+            th.BooleanType,
+            default=True,
+            description="Sync composed products; false skips fetching this stream",
+        ),
+        th.Property(
             "location_ids",
             th.ArrayType(th.StringType),
             required=False,
