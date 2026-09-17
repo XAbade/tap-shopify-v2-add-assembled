@@ -1105,7 +1105,11 @@ class InventoryLevelRestStream(shopifyRestStream):
 
     path = "inventory_levels.json"
     name = "inventory_level_rest"
-    primary_keys = ["id"]
+    primary_keys = ["inventory_item_id", "location_id"]
+    replication_key = "updated_at"
+    state_partitioning_keys = ["location_id"]
+    # Shopify does not guarantee timestamp ordering; commit only complete locations.
+    is_sorted = False
     records_jsonpath = "$.inventory_levels.[*]"
 
     def get_url_params(self, context, next_page_token):
@@ -1125,6 +1129,10 @@ class InventoryLevelRestStream(shopifyRestStream):
     parent_stream_type = LocationsStream
 
     schema = th.PropertiesList(
+        th.Property("inventory_item_id", th.IntegerType),
+        th.Property("location_id", th.IntegerType),
+        th.Property("available", th.IntegerType),
+        th.Property("updated_at", th.DateTimeType),
         th.Property("admin_graphql_api_id", th.StringType),
     ).to_dict()
 
