@@ -1107,8 +1107,9 @@ class InventoryLevelRestStream(shopifyRestStream):
     name = "inventory_level_rest"
     primary_keys = ["inventory_item_id", "location_id"]
     replication_key = "updated_at"
-    state_partitioning_keys = ["location_id"]
-    # Shopify does not guarantee timestamp ordering; commit only complete locations.
+    state_partitioning_keys = []
+    partitions = None
+    # Commit the shared bookmark only after every location batch/page completes.
     is_sorted = False
     records_jsonpath = "$.inventory_levels.[*]"
 
@@ -1117,8 +1118,11 @@ class InventoryLevelRestStream(shopifyRestStream):
         if next_page_token:
             return params  # Shopify REST: page_info replaces other filters
         if context is None:
-            raise ValueError("Inventory levels require a location context")
-        params["location_ids"] = context["location_id"]
+            raise ValueError("Inventory levels require location IDs")
+        params["location_ids"] = context["location_ids"]
+        if context.get("full_refresh"):
+            params.pop("updated_at_min", None)
+            params.pop("updated_at_max", None)
         if self.config.get("inventory_item_ids"):
             item_ids = self.config.get("inventory_item_ids")
             if isinstance(item_ids, list):
@@ -1126,7 +1130,21 @@ class InventoryLevelRestStream(shopifyRestStream):
             params.update({"inventory_item_ids": item_ids})
         return params
 
-    parent_stream_type = LocationsStream
+    def get_records(self, context: Optional[dict]) -> Iterable[dict]:
+        # Old partition bookmarks cannot safely become one global high-water mark.
+        self.stream_state.pop("partitions", None)
+        locations = self._tap.streams["locations"]
+        # Bypass location post-processing: inventory filtering belongs in the ETL.
+        location_ids = sorted({str(row["id"]) for row in locations.request_records({})})
+        full_refresh = self.stream_state.get("location_ids") != location_ids
+        for offset in range(0, len(location_ids), 50):
+            # Shopify accepts at most 50 location IDs per inventory request.
+            yield from super().get_records({
+                "location_ids": ",".join(location_ids[offset:offset + 50]),
+                "full_refresh": full_refresh,
+            })
+        # Commit membership only after all records/children have been processed.
+        self.stream_state["location_ids"] = location_ids
 
     schema = th.PropertiesList(
         th.Property("inventory_item_id", th.IntegerType),
