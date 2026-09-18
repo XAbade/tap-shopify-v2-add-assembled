@@ -90,7 +90,7 @@ class TapshopifyBeta(Tap):
             "location_ids",
             th.ArrayType(th.StringType),
             required=False,
-            description="Optional Shopify location IDs to sync inventory levels for",
+            description="Optional filter for the locations stream; inventory levels always query all locations",
         ),
     ).to_dict()
 
